@@ -1,66 +1,48 @@
 const express = require('express');
 const cors = require('cors');
 const dotenv = require('dotenv');
-dotenv.config();
-
 const multer = require('multer');
+const { OpenAI } = require('openai');
+const { auth } = require('express-oauth2-jwt-bearer');
 const pdfParse = require('pdf-parse');
 const { createWorker } = require('tesseract.js');
-const { OpenAI } = require('openai');
-const fs = require('fs');
-const path = require('path');
-const { auth } = require('express-openid-connect');
+dotenv.config();
 
 const app = express();
-const port = 3001;
+const port = process.env.PORT || 3000;
 
-// Auth0 configuration
-const config = {
-  authRequired: false,
-  auth0Logout: true,
-  secret: process.env.AUTH0_SECRET,
-  baseURL: process.env.AUTH0_BASE_URL || 'http://localhost:3001',
-  clientID: process.env.AUTH0_CLIENT_ID || 'ZRhsytA4WIgbkSrnSSQ6rl4GHfhjkRaC',
-  issuerBaseURL: process.env.AUTH0_ISSUER_BASE_URL || 'https://dev-nh73t7m51ufsuud2.us.auth0.com'
-};
+// --- Middleware Configuration ---
+app.use(cors({
+  origin: process.env.FRONTEND_URL || 'http://localhost:3001',
+  credentials: true,
+  methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
+  allowedHeaders: ['Content-Type', 'Authorization']
+}));
 
-// Check if Auth0 credentials are available
-if (!config.secret) {
-  console.error('Error: AUTH0_SECRET environment variable is not set');
-  console.error('Please set your Auth0 secret in the .env file');
-  process.exit(1);
-}
-
-// Auth router attaches /login, /logout, and /callback routes to the baseURL
-app.use(auth(config));
-
-app.use(cors());
 app.use(express.json());
+app.use(express.urlencoded({ extended: true }));
 
-// Initialize OpenAI with your API key
+// --- Auth Configuration ---
+const jwtCheck = auth({
+  issuerBaseURL: process.env.AUTH0_ISSUER_BASE_URL || 'https://dev-nh73t7m51ufsuud2.us.auth0.com',
+  audience: process.env.AUTH0_AUDIENCE || 'http://studygeniusapi',
+  tokenSigningAlg: 'RS256'
+});
+
+// Initialize OpenAI
 const apiKey = process.env.OPENAI_API_KEY;
-
-// Check if API key is available
 if (!apiKey) {
   console.error('Error: OPENAI_API_KEY environment variable is not set');
-  console.error('Please set your API key in the .env file');
   process.exit(1);
 }
-
 const openai = new OpenAI({ apiKey });
 
-// Multer setup for file upload (in memory)
-const upload = multer({ 
+// Multer setup for file uploads
+const upload = multer({
   storage: multer.memoryStorage(),
-  limits: { fileSize: 10 * 1024 * 1024 }, // 10MB limit
+  limits: { fileSize: 10 * 1024 * 1024 },
   fileFilter: (req, file, cb) => {
-    // Accept PDFs and common image formats
-    if (
-      file.mimetype === 'application/pdf' ||
-      file.mimetype === 'image/png' ||
-      file.mimetype === 'image/jpeg' ||
-      file.mimetype === 'image/jpg'
-    ) {
+    if (file.mimetype === 'application/pdf' || file.mimetype.startsWith('image/')) {
       cb(null, true);
     } else {
       cb(new Error('Unsupported file type. Please upload PDF, PNG, or JPG files.'), false);
@@ -68,58 +50,19 @@ const upload = multer({
   }
 });
 
-// Simple authentication check middleware
-const requireAuth = (req, res, next) => {
-  if (!req.oidc.isAuthenticated()) {
-    return res.status(401).json({ error: 'Authentication required' });
-  }
-  next();
-};
-
-// Basic route to check authentication status
-app.get('/', (req, res) => {
-  res.send(req.oidc.isAuthenticated() ? 'Logged in' : 'Logged out');
-});
-
-// Protected route example
-app.get('/profile', requireAuth, (req, res) => {
-  res.json({ user: req.oidc.user });
-});
-
-// Text input endpoint
-app.post('/echo', requireAuth, async (req, res) => {
-  const { message, count = 10 } = req.body;
-
-  if (!message) {
-    return res.status(400).json({ error: 'Missing message in request body' });
-  }
-
-  try {
-    const flashcards = await generateFlashcardsFromText(message, count);
-    res.json(flashcards);
-  } catch (err) {
-    console.error("GPT API error:", err);
-    res.status(500).json({ error: "ChatGPT API call failed: " + err.message });
-  }
-});
-
+// --- Helper Functions ---
 // Process PDF file
 async function extractTextFromPDF(buffer) {
   try {
+    console.log('Extracting text from PDF...');
     const pdfData = await pdfParse(buffer);
-    // Basic text cleaning
-    const text = pdfData.text
-      .replace(/\s+/g, ' ')  // Replace multiple spaces with single space
-      .trim();
-    
-    // Limit text length to prevent token limit issues
-    const maxChars = 15000; // Approximately 3750 tokens
-    if (text.length > maxChars) {
-      return text.substring(0, maxChars) + "... [content truncated due to length]";
-    }
-    
-    return text;
+    const text = pdfData.text.replace(/\s+/g, ' ').trim();
+    const maxChars = 15000;
+    const result = text.length > maxChars ? text.substring(0, maxChars) + "... [content truncated due to length]" : text;
+    console.log(`Extracted ${result.length} characters from PDF`);
+    return result;
   } catch (error) {
+    console.error('PDF parsing error:', error);
     throw new Error(`PDF parsing error: ${error.message}`);
   }
 }
@@ -127,201 +70,131 @@ async function extractTextFromPDF(buffer) {
 // Process Image using OCR
 async function extractTextFromImage(buffer, mimetype) {
   try {
+    console.log(`Extracting text from image with mimetype: ${mimetype}...`);
     const worker = await createWorker();
-    
-    // Specify language
     await worker.loadLanguage('eng');
     await worker.initialize('eng');
     
-    // Set image recognition parameters for better results
-    await worker.setParameters({
-      tessedit_ocr_engine_mode: 3, // Legacy + LSTM mode
-      preserve_interword_spaces: 1,
-    });
-    
-    // Recognize text
     const { data } = await worker.recognize(buffer);
     await worker.terminate();
     
-    // Basic text cleaning
     const text = data.text
-      .replace(/\n+/g, ' ')  // Replace newlines with spaces
-      .replace(/\s+/g, ' ')  // Replace multiple spaces with single space
+      .replace(/\n+/g, ' ')
+      .replace(/\s+/g, ' ')
       .trim();
     
-    // Limit text length to prevent token limit issues
-    const maxChars = 15000; // Approximately 3750 tokens
-    if (text.length > maxChars) {
-      return text.substring(0, maxChars) + "... [content truncated due to length]";
-    }
-    
-    return text;
+    const maxChars = 15000;
+    const result = text.length > maxChars ? text.substring(0, maxChars) + "... [content truncated due to length]" : text;
+    console.log(`Extracted ${result.length} characters from image`);
+    return result;
   } catch (error) {
+    console.error('OCR processing error:', error);
     throw new Error(`OCR processing error: ${error.message}`);
   }
 }
 
-// Function to generate flashcards from text using AI
-async function generateFlashcardsFromText(text, count = 10) {
-  // Ensure we have valid input
-  if (!text || text.trim().length === 0) {
-    throw new Error("No text provided for flashcard generation");
-  }
+// --- Routes ---
+// Test route (public)
+app.get('/test', (req, res) => {
+  res.json({ message: 'Server is working!' });
+});
 
-  // Create a simpler prompt template that's less likely to confuse the model
-  const promptTemplate = `
-    Create ${count} flashcards based on this text: 
-    
-    "${text.substring(0, 15000)}"
-    
-    Format your answer as a JSON object with this EXACT structure:
-    {
-      "flashcards": [
-        { "question": "Question 1", "answer": "Answer 1" },
-        { "question": "Question 2", "answer": "Answer 2" }
-      ]
-    }
-    
-    Be concise and educational. Each answer should be 1-2 sentences.
-  `;
-  
+// Protected route example
+app.get('/api/protected', jwtCheck, (req, res) => {
+  res.json({ message: 'Protected endpoint accessed successfully!' });
+});
+
+// Flashcard generation route
+app.post('/api/generate-flashcards', upload.single('file'), async (req, res) => {
   try {
-    const completion = await openai.chat.completions.create({
+    console.log('Received request to generate flashcards');
+    const textContent = req.body.text;
+    const file = req.file;
+    const cardCount = parseInt(req.body.count, 10) || 10;
+
+    let extractedText = textContent || '';
+    
+    if (file) {
+      try {
+        console.log(`Processing file: ${file.originalname}, mimetype: ${file.mimetype}`);
+        
+        if (file.mimetype === 'application/pdf') {
+          extractedText += await extractTextFromPDF(file.buffer);
+        } else if (file.mimetype.startsWith('image/')) {
+          extractedText += await extractTextFromImage(file.buffer, file.mimetype);
+        }
+      } catch (error) {
+        console.error('Error processing file:', error);
+        return res.status(500).json({ error: error.message });
+      }
+    }
+
+    if (!extractedText.trim()) {
+      return res.status(400).json({ error: 'No text content provided or extracted.' });
+    }
+
+    // Create flashcards using OpenAI
+    const response = await openai.chat.completions.create({
       model: "gpt-3.5-turbo",
-      messages: [{ role: "user", content: promptTemplate }],
+      messages: [
+        {
+          role: "system",
+          content: "You are a helpful assistant that creates educational flashcards. Return a JSON object with a 'cards' array where each card has 'front' and 'back' properties."
+        },
+        {
+          role: "user",
+          content: `Create ${cardCount} flashcards from this text: "${extractedText}". Format your response as: {"cards": [{"front": "question", "back": "answer"}, ...]}`
+        }
+      ],
       temperature: 0.7,
-      max_tokens: 1500,
       response_format: { type: "json_object" }
     });
-    
-    const reply = completion.choices[0].message.content?.trim();
 
-    if (!reply) {
-      throw new Error("Received empty response from OpenAI");
-    }
+    const parsedResponse = JSON.parse(response.choices[0].message.content);
+    console.log('OpenAI Response:', parsedResponse);
 
-    // Try to parse the JSON
-    try {
-      const parsedReply = JSON.parse(reply);
-      
-      // Check for flashcards array in the response
-      if (parsedReply && Array.isArray(parsedReply.flashcards) && parsedReply.flashcards.length > 0) {
-        return parsedReply.flashcards;
-      } 
-      
-      // If there's no flashcards array but we got a valid array directly
-      else if (Array.isArray(parsedReply) && parsedReply.length > 0) {
-        return parsedReply;
-      }
-      
-      // Some other format was returned
-      throw new Error("OpenAI response didn't contain valid flashcards array");
-      
-    } catch (parseError) {
-      console.error(`JSON parse error: ${parseError.message}`);
-      throw new Error(`Failed to parse OpenAI response as JSON: ${parseError.message}`);
+    // Ensure we have a valid array of flashcards
+    let flashcardsArray;
+    if (Array.isArray(parsedResponse)) {
+      flashcardsArray = parsedResponse;
+    } else if (parsedResponse.cards && Array.isArray(parsedResponse.cards)) {
+      flashcardsArray = parsedResponse.cards;
+    } else {
+      throw new Error('Invalid response format from OpenAI. Expected an array of flashcards or an object with a cards array.');
     }
 
-  } catch (openaiError) {
-    console.error("OpenAI API call failed:", openaiError);
-    throw new Error(`OpenAI error: ${openaiError.message || "Unknown error"}`);
-  }
-}
+    // Format the flashcards consistently
+    const finalFlashcards = {
+      cards: flashcardsArray.map((card, index) => ({
+        front: card.front || card.question || 'Question not available',
+        back: card.back || card.answer || 'Answer not available'
+      }))
+    };
 
-// Combined endpoint for generating flashcards from text or file
-app.post('/generate-flashcards', requireAuth, upload.single('file'), async (req, res) => {
-  try {
-    // Get parameters
-    const textContent = req.body.text || '';
-    const count = parseInt(req.body.count) || 10;
-    
-    let extractedText = '';
-    let combinedText = textContent;
-    
-    // Process file if uploaded
-    if (req.file) {
-      try {
-        const fileType = req.file.mimetype;
-        
-        if (fileType === 'application/pdf') {
-          // Extract text from PDF
-          extractedText = await extractTextFromPDF(req.file.buffer);
-        } 
-        else if (fileType.startsWith('image/')) {
-          // Extract text from image using OCR
-          extractedText = await extractTextFromImage(req.file.buffer, fileType);
-        }
-        
-        // Combine with text input if provided
-        combinedText = textContent 
-          ? `${textContent}\n\n${extractedText}` 
-          : extractedText;
-      } catch (error) {
-        return res.status(400).json({ 
-          error: `File processing error: ${error.message}` 
-        });
-      }
-    }
-    
-    // Check if we have any content to process
-    if (!combinedText.trim()) {
-      return res.status(400).json({ error: 'No content provided (neither text nor valid file content)' });
-    }
-    
-    // Limit combined text to prevent token limit issues
-    const maxChars = 15000; // More conservative limit for input text
-    if (combinedText.length > maxChars) {
-      combinedText = combinedText.substring(0, maxChars) + "... [content truncated due to length]";
-    }
-    
-    // Generate flashcards from the combined text
-    try {
-      const flashcards = await generateFlashcardsFromText(combinedText, count);
-      
-      if (!flashcards || !Array.isArray(flashcards) || flashcards.length === 0) {
-        throw new Error("No valid flashcards were generated");
-      }
-      
-      // Format for frontend compatibility
-      const formattedFlashcards = flashcards.map((card, index) => {
-        if (!card.question || !card.answer) {
-          console.warn(`Card at index ${index} is missing required fields:`, card);
-        }
-        
-        return {
-          id: `card-${index}`,
-          front: card.question || 'Question not available',
-          back: card.answer || 'Answer not available',
-          known: null
-        };
-      });
-      
-      return res.json(formattedFlashcards);
-      
-    } catch (flashcardError) {
-      return res.status(500).json({ 
-        error: 'Failed to generate flashcards', 
-        message: flashcardError.message 
-      });
-    }
-  } catch (err) {
-    // Catch any other errors
-    res.status(500).json({ 
-      error: 'Server error', 
-      message: err.message || "Unknown error occurred"
-    });
+    console.log(`Generated ${finalFlashcards.cards.length} flashcards successfully`);
+    res.json(finalFlashcards);
+  } catch (error) {
+    console.error('Error generating flashcards:', error);
+    res.status(500).json({ error: 'Failed to generate flashcards: ' + error.message });
   }
 });
 
-// Add a global error handler
+// Error handling middleware
 app.use((err, req, res, next) => {
-  console.error('Global error handler caught:', err);
-  res.status(500).json({ 
-    error: 'Server error',
-    message: err.message || 'An unexpected error occurred'
-  });
+  console.error(err.stack);
+  if (err.name === 'UnauthorizedError') {
+    return res.status(401).json({ message: 'Invalid or missing token.' });
+  }
+  res.status(500).json({ error: 'Something went wrong!', message: err.message });
 });
 
+// Start server
 app.listen(port, () => {
-  console.log(`Server running at http://localhost:${port}`);
+  console.log('Environment Configuration:');
+  console.log(`- PORT: ${port}`);
+  console.log(`- AUTH0_ISSUER_BASE_URL: ${process.env.AUTH0_ISSUER_BASE_URL || 'https://dev-nh73t7m51ufsuud2.us.auth0.com'}`);
+  console.log(`- AUTH0_AUDIENCE: ${process.env.AUTH0_AUDIENCE || 'http://studygeniusapi'}`);
+  console.log(`- FRONTEND_URL: ${process.env.FRONTEND_URL || 'http://localhost:3001'}`);
+  console.log(`- OPENAI_API_KEY: ******`);
+  console.log(`\nServer running at http://localhost:${port}`);
 });
