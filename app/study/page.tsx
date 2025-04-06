@@ -8,6 +8,7 @@ import { ThumbsUp, ThumbsDown, ArrowLeft, ArrowRight, RotateCcw, CheckCircle } f
 import { FlashcardComponent } from "@/components/flashcard"
 import { EmptyState } from "@/components/empty-state"
 import { Card, CardContent, CardDescription, CardFooter, CardHeader, CardTitle } from "@/components/ui/card"
+import Image from "next/image"
 
 // Define the Flashcard interface locally
 interface Flashcard {
@@ -35,77 +36,105 @@ export default function StudyPage() {
   const [isCompleted, setIsCompleted] = useState(false)
   const [allStudySets, setAllStudySets] = useState<StudySet[]>([])
   const [showManageModal, setShowManageModal] = useState(false)
+  const [isAuthenticated, setIsAuthenticated] = useState(false)
 
   useEffect(() => {
-    // Load study set from localStorage
-    const currentStudySetId = localStorage.getItem("currentStudySetId");
-    const studySetsJSON = localStorage.getItem("studySets");
-    const oldStudySetJSON = localStorage.getItem("studySet"); // Check for old format
-    
-    // Handle migration from old format to new format
-    if (oldStudySetJSON && (!studySetsJSON || JSON.parse(studySetsJSON).length === 0)) {
+    // Check authentication status
+    const checkAuth = async () => {
       try {
-        const oldStudySet = JSON.parse(oldStudySetJSON);
+        const response = await fetch('http://localhost:3001/');
+        const text = await response.text();
+        const authenticated = text.includes('Logged in');
+        setIsAuthenticated(authenticated);
         
-        // Generate an ID for the old study set
-        const migratedSet = {
-          ...oldStudySet,
-          id: `set-${Date.now()}`
-        };
-        
-        // Create a new array with this set
-        const newStudySets = [migratedSet];
-        
-        // Save to localStorage in new format
-        localStorage.setItem("studySets", JSON.stringify(newStudySets));
-        localStorage.setItem("currentStudySetId", migratedSet.id);
-        
-        // Clean up old format
-        localStorage.removeItem("studySet");
-        
-        // Update state
-        setAllStudySets(newStudySets);
-        setStudySet(migratedSet);
-        setIsLoading(false);
-        return;
-      } catch (e) {
-        console.error("Failed to migrate old study set format:", e);
-      }
-    }
-    
-    // Continue with regular loading logic for new format
-    if (studySetsJSON) {
-      try {
-        const studySets = JSON.parse(studySetsJSON);
-        
-        // Validate that studySets is an array
-        if (!Array.isArray(studySets)) {
-          console.error("studySets is not an array:", studySets);
+        // If not authenticated, we'll show the auth required view
+        if (!authenticated) {
           setIsLoading(false);
           return;
         }
         
-        setAllStudySets(studySets);
-        
-        if (studySets.length > 0) {
-          // Find the current study set by ID, or use the most recent one
-          const currentSet = currentStudySetId 
-            ? studySets.find((set) => set.id === currentStudySetId) 
-            : studySets[studySets.length - 1];
-          
-          if (currentSet) {
-            setStudySet(currentSet);
-          } else {
-            console.error("Could not find study set with ID:", currentStudySetId);
-            // If specific ID not found, default to most recent
-            setStudySet(studySets[studySets.length - 1]);
-          }
-        }
-      } catch (e) {
-        console.error("Failed to parse study sets from localStorage:", e);
+        // Continue with loading study sets if authenticated
+        loadStudySets();
+      } catch (error) {
+        console.error('Error checking auth status:', error);
+        setIsLoading(false);
       }
-    }
-    setIsLoading(false);
+    };
+    
+    // Function to load study sets from localStorage
+    const loadStudySets = () => {
+      // Load study set from localStorage
+      const currentStudySetId = localStorage.getItem("currentStudySetId");
+      const studySetsJSON = localStorage.getItem("studySets");
+      const oldStudySetJSON = localStorage.getItem("studySet"); // Check for old format
+      
+      // Handle migration from old format to new format
+      if (oldStudySetJSON && (!studySetsJSON || JSON.parse(studySetsJSON).length === 0)) {
+        try {
+          const oldStudySet = JSON.parse(oldStudySetJSON);
+          
+          // Generate an ID for the old study set
+          const migratedSet = {
+            ...oldStudySet,
+            id: `set-${Date.now()}`
+          };
+          
+          // Create a new array with this set
+          const newStudySets = [migratedSet];
+          
+          // Save to localStorage in new format
+          localStorage.setItem("studySets", JSON.stringify(newStudySets));
+          localStorage.setItem("currentStudySetId", migratedSet.id);
+          
+          // Clean up old format
+          localStorage.removeItem("studySet");
+          
+          // Update state
+          setAllStudySets(newStudySets);
+          setStudySet(migratedSet);
+          setIsLoading(false);
+          return;
+        } catch (e) {
+          console.error("Failed to migrate old study set format:", e);
+        }
+      }
+      
+      // Continue with regular loading logic for new format
+      if (studySetsJSON) {
+        try {
+          const studySets = JSON.parse(studySetsJSON);
+          
+          // Validate that studySets is an array
+          if (!Array.isArray(studySets)) {
+            console.error("studySets is not an array:", studySets);
+            setIsLoading(false);
+            return;
+          }
+          
+          setAllStudySets(studySets);
+          
+          if (studySets.length > 0) {
+            // Find the current study set by ID, or use the most recent one
+            const currentSet = currentStudySetId 
+              ? studySets.find((set) => set.id === currentStudySetId) 
+              : studySets[studySets.length - 1];
+            
+            if (currentSet) {
+              setStudySet(currentSet);
+            } else {
+              console.error("Could not find study set with ID:", currentStudySetId);
+              // If specific ID not found, default to most recent
+              setStudySet(studySets[studySets.length - 1]);
+            }
+          }
+        } catch (e) {
+          console.error("Failed to parse study sets from localStorage:", e);
+        }
+      }
+      setIsLoading(false);
+    };
+    
+    checkAuth();
   }, []);
 
   const handleKnown = (known: boolean) => {
@@ -278,6 +307,39 @@ export default function StudyPage() {
         <p>Loading study set...</p>
       </div>
     )
+  }
+
+  if (!isAuthenticated) {
+    return (
+      <div className="container max-w-4xl py-12 flex items-center justify-center">
+        <Card className="w-full max-w-md">
+          <CardHeader className="text-center">
+            <CardTitle>Authentication Required</CardTitle>
+            <CardDescription>
+              Please log in to view your study sets.
+            </CardDescription>
+          </CardHeader>
+          <CardContent className="text-center p-6">
+            <div className="relative w-full h-48 mb-6 rounded-lg overflow-hidden">
+              <Image
+                src="/images/dashboard.png"
+                alt="Login required"
+                fill
+                className="object-cover"
+              />
+            </div>
+          </CardContent>
+          <CardFooter>
+            <Button 
+              className="w-full" 
+              onClick={() => window.location.href = 'http://localhost:3001/login'}
+            >
+              Go to Login
+            </Button>
+          </CardFooter>
+        </Card>
+      </div>
+    );
   }
 
   if (!studySet) {

@@ -9,9 +9,30 @@ const { createWorker } = require('tesseract.js');
 const { OpenAI } = require('openai');
 const fs = require('fs');
 const path = require('path');
+const { auth } = require('express-openid-connect');
 
 const app = express();
 const port = 3001;
+
+// Auth0 configuration
+const config = {
+  authRequired: false,
+  auth0Logout: true,
+  secret: process.env.AUTH0_SECRET,
+  baseURL: process.env.AUTH0_BASE_URL || 'http://localhost:3001',
+  clientID: process.env.AUTH0_CLIENT_ID || 'ZRhsytA4WIgbkSrnSSQ6rl4GHfhjkRaC',
+  issuerBaseURL: process.env.AUTH0_ISSUER_BASE_URL || 'https://dev-nh73t7m51ufsuud2.us.auth0.com'
+};
+
+// Check if Auth0 credentials are available
+if (!config.secret) {
+  console.error('Error: AUTH0_SECRET environment variable is not set');
+  console.error('Please set your Auth0 secret in the .env file');
+  process.exit(1);
+}
+
+// Auth router attaches /login, /logout, and /callback routes to the baseURL
+app.use(auth(config));
 
 app.use(cors());
 app.use(express.json());
@@ -47,8 +68,26 @@ const upload = multer({
   }
 });
 
+// Simple authentication check middleware
+const requireAuth = (req, res, next) => {
+  if (!req.oidc.isAuthenticated()) {
+    return res.status(401).json({ error: 'Authentication required' });
+  }
+  next();
+};
+
+// Basic route to check authentication status
+app.get('/', (req, res) => {
+  res.send(req.oidc.isAuthenticated() ? 'Logged in' : 'Logged out');
+});
+
+// Protected route example
+app.get('/profile', requireAuth, (req, res) => {
+  res.json({ user: req.oidc.user });
+});
+
 // Text input endpoint
-app.post('/echo', async (req, res) => {
+app.post('/echo', requireAuth, async (req, res) => {
   const { message, count = 10 } = req.body;
 
   if (!message) {
@@ -190,7 +229,7 @@ async function generateFlashcardsFromText(text, count = 10) {
 }
 
 // Combined endpoint for generating flashcards from text or file
-app.post('/generate-flashcards', upload.single('file'), async (req, res) => {
+app.post('/generate-flashcards', requireAuth, upload.single('file'), async (req, res) => {
   try {
     // Get parameters
     const textContent = req.body.text || '';

@@ -2,7 +2,7 @@
 
 import type React from "react"
 
-import { useState } from "react"
+import { useState, useEffect } from "react"
 import { useRouter } from "next/navigation"
 import { Button } from "@/components/ui/button"
 import { Card, CardContent, CardDescription, CardFooter, CardHeader, CardTitle } from "@/components/ui/card"
@@ -26,6 +26,39 @@ export default function CreatePage() {
   const [isGenerating, setIsGenerating] = useState(false)
   const [uploadedFile, setUploadedFile] = useState<File | null>(null)
   const [activeTab, setActiveTab] = useState("text")
+  const [isAuthenticated, setIsAuthenticated] = useState(false)
+  const [isLoading, setIsLoading] = useState(true)
+
+  useEffect(() => {
+    // Check authentication status
+    const checkAuth = async () => {
+      try {
+        const response = await fetch('http://localhost:3001/');
+        const text = await response.text();
+        const authenticated = text.includes('Logged in');
+        setIsAuthenticated(authenticated);
+        
+        // Redirect if not authenticated
+        if (!authenticated) {
+          toast({
+            title: "Authentication Required",
+            description: "Please log in to create study sets",
+            variant: "destructive",
+          });
+          // Redirect to login after a short delay
+          setTimeout(() => {
+            window.location.href = 'http://localhost:3001/login';
+          }, 2000);
+        }
+      } catch (error) {
+        console.error('Error checking auth status:', error);
+      } finally {
+        setIsLoading(false);
+      }
+    };
+    
+    checkAuth();
+  }, []);
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault()
@@ -130,6 +163,47 @@ export default function CreatePage() {
     } finally {
       setIsGenerating(false)
     }
+  }
+
+  if (isLoading) {
+    return (
+      <div className="container max-w-4xl py-12 flex items-center justify-center">
+        <p>Loading...</p>
+      </div>
+    );
+  }
+
+  if (!isAuthenticated) {
+    return (
+      <div className="container max-w-4xl py-12 flex items-center justify-center">
+        <Card className="w-full max-w-md">
+          <CardHeader className="text-center">
+            <CardTitle>Authentication Required</CardTitle>
+            <CardDescription>
+              Please log in to create study sets.
+            </CardDescription>
+          </CardHeader>
+          <CardContent className="text-center p-6">
+            <div className="relative w-full h-48 mb-6 rounded-lg overflow-hidden">
+              <Image
+                src="/images/dashboard.png"
+                alt="Login required"
+                fill
+                className="object-cover"
+              />
+            </div>
+          </CardContent>
+          <CardFooter>
+            <Button 
+              className="w-full" 
+              onClick={() => window.location.href = 'http://localhost:3001/login'}
+            >
+              Go to Login
+            </Button>
+          </CardFooter>
+        </Card>
+      </div>
+    );
   }
 
   return (
