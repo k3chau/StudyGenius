@@ -110,7 +110,9 @@ app.post('/api/generate-flashcards', upload.single('file'), async (req, res) => 
     console.log('Received request to generate flashcards');
     const textContent = req.body.text;
     const file = req.file;
-    const cardCount = parseInt(req.body.count, 10) || 10;
+    const userRequestedCount = parseInt(req.body.count, 10) || 10;
+    const cardCount = userRequestedCount + 1; // Add one to the user's requested count
+    console.log(`User requested ${userRequestedCount} cards, generating ${cardCount} cards`);
 
     let extractedText = textContent || '';
     
@@ -139,11 +141,11 @@ app.post('/api/generate-flashcards', upload.single('file'), async (req, res) => 
       messages: [
         {
           role: "system",
-          content: "You are a helpful assistant that creates educational flashcards. Return a JSON object with a 'cards' array where each card has 'front' and 'back' properties."
+          content: "You are a helpful assistant that creates educational flashcards. You MUST create EXACTLY the number of flashcards requested - no more, no less. Each flashcard should be unique with no repeated content."
         },
         {
           role: "user",
-          content: `Create ${cardCount} flashcards from this text: "${extractedText}". Format your response as: {"cards": [{"front": "question", "back": "answer"}, ...]}`
+          content: `Create EXACTLY ${cardCount} flashcards from this text: "${extractedText}". Format your response as a JSON object with EXACTLY ${cardCount} items in the cards array: {"cards": [{"front": "question", "back": "answer"}, ...]}. The response MUST contain exactly ${cardCount} cards.`
         }
       ],
       temperature: 0.7,
@@ -161,6 +163,36 @@ app.post('/api/generate-flashcards', upload.single('file'), async (req, res) => 
       flashcardsArray = parsedResponse.cards;
     } else {
       throw new Error('Invalid response format from OpenAI. Expected an array of flashcards or an object with a cards array.');
+    }
+
+    // Validate the number of flashcards
+    if (flashcardsArray.length !== cardCount) {
+      console.log(`Warning: Received ${flashcardsArray.length} cards but expected ${cardCount} (user requested ${userRequestedCount} + 1). Retrying...`);
+      // If we don't have the correct number of cards, try one more time
+      const retryResponse = await openai.chat.completions.create({
+        model: "gpt-3.5-turbo",
+        messages: [
+          {
+            role: "system",
+            content: `You are a helpful assistant that creates educational flashcards. You MUST create EXACTLY ${cardCount} flashcards - this is critical.`
+          },
+          {
+            role: "user",
+            content: `Your previous response did not contain the correct number of flashcards. Create EXACTLY ${cardCount} flashcards (${userRequestedCount} + 1 bonus card) from this text: "${extractedText}". Your response MUST be a JSON object with EXACTLY ${cardCount} items in the cards array: {"cards": [{"front": "question", "back": "answer"}, ...]}. Count carefully and ensure there are exactly ${cardCount} cards.`
+          }
+        ],
+        temperature: 0.7,
+        response_format: { type: "json_object" }
+      });
+
+      const retryParsedResponse = JSON.parse(retryResponse.choices[0].message.content);
+      if (retryParsedResponse.cards && Array.isArray(retryParsedResponse.cards)) {
+        flashcardsArray = retryParsedResponse.cards;
+      }
+
+      if (flashcardsArray.length !== cardCount) {
+        throw new Error(`Failed to generate the requested number of flashcards. Requested: ${cardCount}, Received: ${flashcardsArray.length}`);
+      }
     }
 
     // Format the flashcards consistently

@@ -1,33 +1,34 @@
 "use client"
 
 import Link from "next/link"
-import { useState, useEffect } from "react"
+import { useAuth0 } from "@auth0/auth0-react"
 import { ModeToggle } from "@/components/ui/mode-toggle"
+import LoginButton from "./LoginButton"
+import LogoutButton from "./LogoutButton"
 
 export function Navbar() {
-  const [isLoggedIn, setIsLoggedIn] = useState(false)
+  const { 
+    isAuthenticated, 
+    isLoading
+  } = useAuth0();
 
-  useEffect(() => {
-    // Check authentication status when component mounts
-    checkAuthStatus()
-  }, [])
-
-  const checkAuthStatus = async () => {
-    try {
-      const response = await fetch('http://localhost:3001/');
-      const text = await response.text();
-      setIsLoggedIn(text.includes('Logged in'));
-    } catch (error) {
-      console.error('Error checking auth status:', error);
-    }
-  }
-
-  const handleLogin = () => {
-    window.location.href = 'http://localhost:3001/login';
-  }
-
-  const handleLogout = () => {
-    window.location.href = 'http://localhost:3001/logout';
+  // Show a simplified navbar while Auth0 is loading
+  if (isLoading) {
+    return (
+      <header className="sticky top-0 z-40 border-b bg-background">
+        <div className="container flex h-16 items-center">
+          <div className="mr-4 flex">
+            <Link className="flex items-center space-x-2" href="/">
+              <span className="font-bold">StudyGenius</span>
+            </Link>
+          </div>
+          <div className="flex flex-1 items-center justify-end space-x-4">
+             {/* Loading indicator */}
+             <span className="text-sm text-muted-foreground">Loading...</span>
+          </div>
+        </div>
+      </header>
+    );
   }
 
   return (
@@ -52,21 +53,13 @@ export function Navbar() {
             >
               Study
             </Link>
-            {isLoggedIn ? (
-              <button
-                onClick={handleLogout}
-                className="px-4 py-2 rounded-md bg-primary text-primary-foreground hover:bg-primary/90"
-              >
-                Logout
-              </button>
-            ) : (
-              <button
-                onClick={handleLogin}
-                className="px-4 py-2 rounded-md bg-primary text-primary-foreground hover:bg-primary/90"
-              >
-                Login
-              </button>
-            )}
+            
+            {/* Auth buttons */}
+            <div className="px-4 py-2">
+              <LoginButton />
+              <LogoutButton />
+            </div>
+            
             <ModeToggle />
           </nav>
         </div>

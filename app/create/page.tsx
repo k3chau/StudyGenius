@@ -1,9 +1,8 @@
 "use client"
 
-import type React from "react"
-
-import { useState, useEffect } from "react"
+import React, { useState, useEffect } from "react"
 import { useRouter } from "next/navigation"
+import { useAuth0 } from "@auth0/auth0-react"
 import { Button } from "@/components/ui/button"
 import { Card, CardContent, CardDescription, CardFooter, CardHeader, CardTitle } from "@/components/ui/card"
 import { Input } from "@/components/ui/input"
@@ -13,12 +12,16 @@ import { Textarea } from "@/components/ui/textarea"
 import { Slider } from "@/components/ui/slider"
 import { FileUploader } from "@/components/file-uploader"
 import { toast } from "@/components/ui/use-toast"
-
-// Add Image import
 import Image from "next/image"
 
 export default function CreatePage() {
   const router = useRouter()
+  const { 
+    isAuthenticated, 
+    isLoading, 
+    loginWithRedirect, 
+    getAccessTokenSilently
+  } = useAuth0()
   const [title, setTitle] = useState("")
   const [description, setDescription] = useState("")
   const [textContent, setTextContent] = useState("")
@@ -26,96 +29,106 @@ export default function CreatePage() {
   const [isGenerating, setIsGenerating] = useState(false)
   const [uploadedFile, setUploadedFile] = useState<File | null>(null)
   const [activeTab, setActiveTab] = useState("text")
-  const [isAuthenticated, setIsAuthenticated] = useState(false)
-  const [isLoading, setIsLoading] = useState(true)
 
   useEffect(() => {
-    // Check authentication status
-    const checkAuth = async () => {
-      try {
-        const response = await fetch('http://localhost:3001/');
-        const text = await response.text();
-        const authenticated = text.includes('Logged in');
-        setIsAuthenticated(authenticated);
-        
-        // Redirect if not authenticated
-        if (!authenticated) {
-          toast({
-            title: "Authentication Required",
-            description: "Please log in to create study sets",
-            variant: "destructive",
-          });
-          // Redirect to login after a short delay
-          setTimeout(() => {
-            window.location.href = 'http://localhost:3001/login';
-          }, 2000);
-        }
-      } catch (error) {
-        console.error('Error checking auth status:', error);
-      } finally {
-        setIsLoading(false);
-      }
-    };
-    
-    checkAuth();
-  }, []);
+    if (!isLoading && !isAuthenticated) {
+       toast({
+         title: "Authentication Required",
+         description: "Redirecting to login...",
+         variant: "destructive",
+       });
+       loginWithRedirect({ appState: { returnTo: '/create' } }); 
+    }
+  }, [isLoading, isAuthenticated, loginWithRedirect])
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault()
+    if (!isAuthenticated) {
+        toast({ title: "Error", description: "You must be logged in to create sets.", variant: "destructive" });
+        return;
+    }
     setIsGenerating(true)
 
     try {
-      // Create FormData to send both text and file content
+      const accessToken = await getAccessTokenSilently()
+      
+      // Create FormData for the request
       const formData = new FormData()
       
-      // Add text content if available
-      if (textContent) {
-        formData.append('text', textContent)
-      }
+      console.log("Active tab:", activeTab);
       
-      // Add file if available
-      if (activeTab === "file" && uploadedFile) {
+      if (activeTab === "text") {
+        console.log("Adding text content:", textContent.substring(0, 100) + "...");
+        formData.append('text', textContent)
+      } else if (uploadedFile) {
+        console.log("Adding file:", uploadedFile.name);
         formData.append('file', uploadedFile)
       }
       
-      // Add number of cards to generate
+      console.log("Adding card count:", numCards[0]);
       formData.append('count', numCards[0].toString())
       
-      // Send to backend API
-      const response = await fetch('http://localhost:3001/generate-flashcards', {
-        method: 'POST',
-        body: formData,
-      })
+      // Define the API URL
+      const apiUrl = 'http://localhost:3000/api/generate-flashcards';
+      console.log(`Making API request to: ${apiUrl}`);
       
-      // Handle error response
+      const response = await fetch(apiUrl, {
+        method: 'POST',
+        // Don't include Content-Type for FormData requests
+        headers: {
+          Authorization: `Bearer ${accessToken}`
+        },
+        body: formData,
+      });
+      
+      console.log('Response status:', response.status);
+      
       if (!response.ok) {
         const errorText = await response.text();
+        console.error('Error response:', errorText);
         
-        let errorData;
+        let errorMessage = `HTTP error! status: ${response.status}`;
+        
         try {
-          // Try to parse as JSON if possible
-          errorData = JSON.parse(errorText);
-        } catch (e) {
-          errorData = { error: errorText || 'Unknown server error' };
+          // Try to parse the error as JSON
+          const errorData = JSON.parse(errorText);
+          errorMessage = errorData.error || errorData.message || errorMessage;
+        } catch (parseError) {
+          // If parsing fails, use the raw text or default error
+          errorMessage = errorText || errorMessage;
         }
         
-        throw new Error(errorData.error || errorData.message || 'Failed to generate flashcards');
+        throw new Error(errorMessage);
       }
       
-      // Get flashcards from response
       let flashcards;
       try {
-        flashcards = await response.json();
+        const responseData = await response.json();
+        // Handle both array and object response formats
+        flashcards = Array.isArray(responseData) ? responseData :
+                    responseData.cards ? responseData.cards :
+                    responseData.flashcards ? responseData.flashcards : null;
+                    
+        if (!flashcards || !Array.isArray(flashcards)) {
+          throw new Error('Invalid flashcard data received from server');
+        }
+        
+        // Ensure each flashcard has the required properties
+        flashcards = flashcards.map((card, index) => ({
+          id: `card-${Date.now()}-${index}`,
+          front: card.front || card.question || 'Question not available',
+          back: card.back || card.answer || 'Answer not available',
+          known: null
+        }));
       } catch (jsonError) {
-        console.error("Error parsing response JSON:", jsonError);
-        throw new Error('Invalid response format received from server');
+        console.error("Error parsing flashcard JSON:", jsonError);
+        throw new Error("Failed to parse flashcard data from server");
       }
 
       if (!flashcards || flashcards.length === 0) {
-        throw new Error('No flashcards were generated')
+        throw new Error('No flashcards were generated');
       }
 
-      // Generate a unique ID for this study set
       const newStudySetId = `set-${Date.now()}`;
       
       const newStudySet = {
@@ -126,32 +139,16 @@ export default function CreatePage() {
         createdAt: new Date().toISOString(),
       };
       
-      // Get existing study sets array or create a new one
       const existingStudySetsJSON = localStorage.getItem("studySets");
-      let studySets = [];
+      let studySets = existingStudySetsJSON ? JSON.parse(existingStudySetsJSON) : [];
+      if (!Array.isArray(studySets)) studySets = [];
       
-      if (existingStudySetsJSON) {
-        try {
-          studySets = JSON.parse(existingStudySetsJSON);
-          if (!Array.isArray(studySets)) {
-            studySets = [];
-          }
-        } catch (e) {
-          console.error("Error parsing study sets:", e);
-          studySets = [];
-        }
-      }
-      
-      // Add new study set to the array
       studySets.push(newStudySet);
       
-      // Store updated array in localStorage
       localStorage.setItem("studySets", JSON.stringify(studySets));
       
-      // Set this as the current study set
       localStorage.setItem("currentStudySetId", newStudySetId);
 
-      // Navigate to study page
       router.push("/study")
     } catch (error) {
       console.error("Error generating flashcards:", error)
@@ -168,7 +165,7 @@ export default function CreatePage() {
   if (isLoading) {
     return (
       <div className="container max-w-4xl py-12 flex items-center justify-center">
-        <p>Loading...</p>
+        <p>Loading authentication state...</p>
       </div>
     );
   }
@@ -196,7 +193,7 @@ export default function CreatePage() {
           <CardFooter>
             <Button 
               className="w-full" 
-              onClick={() => window.location.href = 'http://localhost:3001/login'}
+              onClick={() => loginWithRedirect({ appState: { returnTo: '/create' } })}
             >
               Go to Login
             </Button>
@@ -214,7 +211,6 @@ export default function CreatePage() {
           <p className="text-gray-500 dark:text-gray-400">
             Upload your lecture materials and generate flashcards for studying.
           </p>
-          {/* Add this section right after the <h1> and description paragraph in the first <div> */}
           <div className="relative w-full h-48 rounded-lg overflow-hidden mb-6">
             <Image
               src="/images/dashboard.png"
